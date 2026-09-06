@@ -666,6 +666,16 @@ export const resetInstanceOverridesInput = z.object({
   fileKey: fileKeyField,
 });
 
+export const executeCodeInput = z.object({
+  code: z
+    .string()
+    .min(1)
+    .describe(
+      "JavaScript code to execute in Figma. Has full access to the `figma` global API. Supports expressions, statements with return, or async functions / IIFEs (e.g. (async () => { ... })())."
+    ),
+  fileKey: fileKeyField,
+});
+
 export const toolInputSchemas = {
   get_document: z.object({
     fileKey: fileKeyField,
@@ -960,6 +970,7 @@ export const toolInputSchemas = {
   find_instances: findInstancesInput,
   create_instance: createInstanceInput,
   reset_instance_overrides: resetInstanceOverridesInput,
+  execute_code: executeCodeInput,
 } as const;
 
 type ToolName = keyof typeof toolInputSchemas;
@@ -1075,6 +1086,7 @@ const rpcToArgs: Record<
     ...params,
     nodeId: nodeIds?.[0] ?? (params?.nodeId as string | undefined),
   }),
+  execute_code: (_nodeIds, params) => ({ ...params }),
 };
 
 /**

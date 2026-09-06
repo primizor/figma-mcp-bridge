@@ -33,7 +33,8 @@ type RequestType =
   | "get_node_ancestry"
   | "find_instances"
   | "create_instance"
-  | "reset_instance_overrides";
+  | "reset_instance_overrides"
+  | "execute_code";
 
 type ServerRequest = {
   type: RequestType;

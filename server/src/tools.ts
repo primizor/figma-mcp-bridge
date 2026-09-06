@@ -644,6 +644,17 @@ export function registerTools(server: McpServer, node: Node, port: number): void
       }
     }
   );
+
+  server.tool(
+    "execute_code",
+    "Execute arbitrary JavaScript in Figma with access to the `figma` global object (figma.currentPage, figma.getNodeByIdAsync, node creation, selection, etc.). Automatically handles async functions, IIFEs like (async () => {})(), bare statements with return, captures console.log output and returns errors. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.execute_code.shape,
+    async ({ code, fileKey }): Promise<ToolResult> => {
+      return renderResponse(() =>
+        node.sendWithParams("execute_code", undefined, { code }, fileKey)
+      );
+    }
+  );
 }
 
 /**

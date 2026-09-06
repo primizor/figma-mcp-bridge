@@ -107,6 +107,7 @@ If you want to know more about how it works, read the [How it works](#how-it-wor
 | `set_selection`                | Set the page selection to a list of node IDs (works in Dev Mode)                         |
 | `scroll_and_zoom_into_view`    | Frame the viewport around the given nodes (works in Dev Mode)                            |
 | `delete_nodes`                 | Delete nodes with explicit confirmation                                                  |
+| `execute_code`                 | Execute arbitrary JavaScript in Figma plugin context, returning result & console logs    |
 
 All tools accept an optional `fileKey` parameter when multiple Figma files are connected. Use `list_files` to discover connected files and their keys.
 
@@ -115,6 +116,7 @@ All tools accept an optional `fileKey` parameter when multiple Figma files are c
 - Edit tools work only when the plugin is opened in Figma's design editor (Dev Mode is read-only — they will return a clear error there).
 - The current user must have permission to edit the target file.
 - `delete_nodes` is intentionally gated behind `confirm: true`.
+- `execute_code` runs JavaScript directly in the Figma plugin main thread context (`figma.*` is available). It automatically wraps async code and IIFEs (e.g. `(async () => { ... })()`, `async () => ...`, statements with top-level `return` or trailing expressions), captures console output (`console.log`, `console.warn`, `console.error`), and returns `{ success, result, logs, error, stack }`. Figma `SceneNode`s in return values are automatically serialized.
 - Text edits automatically load the fonts currently used by the target text node before applying the new content.
 - New text nodes default to `Inter Regular` unless a font is provided.
 - `create_image` reads local paths relative to the MCP server working directory unless you pass an absolute path.

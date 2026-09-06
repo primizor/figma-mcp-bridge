@@ -42,7 +42,8 @@ type RequestType =
   | "get_node_ancestry"
   | "find_instances"
   | "create_instance"
-  | "reset_instance_overrides";
+  | "reset_instance_overrides"
+  | "execute_code";
 
 type ServerRequestParams = Record<string, unknown> & {
   format?: "PNG" | "SVG" | "JPG" | "PDF";
@@ -179,6 +180,130 @@ const getParentNodeById = async (parentId: string): Promise<BaseNode & ChildrenM
     await parent.loadAsync();
   }
   return parent;
+};
+
+const AsyncFunction = (new Function("return Object.getPrototypeOf(async function(){}).constructor"))();
+
+const wrapCode = (rawCode: string): string => {
+  const code = rawCode.trim();
+
+  // Check if code is an uncalled async arrow function: async () => { ... }
+  const asyncArrowMatch = code.match(/^\s*async\s*(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>/);
+  if (asyncArrowMatch) {
+    const withoutTrailingSemicolons = code.replace(/;+\s*$/, "").trim();
+    if (!withoutTrailingSemicolons.endsWith(")")) {
+      return `return await (${withoutTrailingSemicolons})();`;
+    }
+  }
+
+  // Check if code is an uncalled async function expression: (async function(...) { ... }) or async function(...) { ... }
+  const asyncFnMatch = code.match(
+    /^\s*\(?\s*async\s+function\s*(?:[a-zA-Z0-9_$]+)?\s*\([\s\S]*\)\s*\{[\s\S]*\}\s*\)?\s*;?$/
+  );
+  if (asyncFnMatch) {
+    const withoutTrailingSemicolons = code.replace(/;+\s*$/, "").trim();
+    if (!withoutTrailingSemicolons.endsWith(")")) {
+      return `return await (${withoutTrailingSemicolons})();`;
+    }
+  }
+
+  // Check if code is already an IIFE like (async () => { ... })() or (function() { ... })()
+  const iifeMatch = code.match(
+    /^\s*\(?\s*(?:async\s*)?function|\(\s*async\s*(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>/
+  );
+  const endsWithCall = code.replace(/;+\s*$/, "").trim().endsWith(")");
+  if (iifeMatch && endsWithCall) {
+    return `return await (${code.replace(/;+\s*$/, "")});`;
+  }
+
+  // If code contains top-level return statement
+  if (/\breturn\b/.test(code)) {
+    return `return await (async () => {\n${code}\n})();`;
+  }
+
+  // If code does not contain return, try returning the last statement/expression
+  const lines = code.split("\n");
+  let lastNonEmptyIndex = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].trim().length > 0) {
+      lastNonEmptyIndex = i;
+      break;
+    }
+  }
+
+  if (lastNonEmptyIndex >= 0) {
+    const lastLine = lines[lastNonEmptyIndex].trim().replace(/;+\s*$/, "");
+    const declarationKeywords =
+      /^(const|let|var|function|class|import|export|if|for|while|do|switch|try|throw)\b/;
+    if (!declarationKeywords.test(lastLine)) {
+      lines[lastNonEmptyIndex] = `return (${lastLine});`;
+      const candidateCode = lines.join("\n");
+      return `return await (async () => {\n${candidateCode}\n})();`;
+    }
+  }
+
+  return `return await (async () => {\n${code}\n})();`;
+};
+
+const safeSerialize = (
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>()
+): unknown => {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value !== "object" && typeof value !== "function") return value;
+  if (typeof value === "function") return `[Function: ${(value as Function).name || "anonymous"}]`;
+
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+    };
+  }
+
+  // If it's a Figma node, serialize via serializeNode
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    "type" in value &&
+    typeof (value as { id: unknown }).id === "string" &&
+    typeof (value as { type: unknown }).type === "string"
+  ) {
+    try {
+      return serializeNode(value as SceneNode);
+    } catch {
+      return {
+        id: (value as { id: string }).id,
+        name: (value as { name?: string }).name,
+        type: (value as { type: string }).type,
+      };
+    }
+  }
+
+  if (depth > 6) return "[MaxDepthReached]";
+
+  if (seen.has(value as object)) {
+    return "[Circular]";
+  }
+  seen.add(value as object);
+
+  if (Array.isArray(value)) {
+    return value.map((item) => safeSerialize(item, depth + 1, seen));
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    try {
+      result[key] = safeSerialize(val, depth + 1, seen);
+    } catch {
+      result[key] = "[Unserializable]";
+    }
+  }
+  return result;
 };
 
 const parseHexColor = (hex: string): RGB => {
@@ -2342,6 +2467,85 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
             reset: true,
           },
         };
+      }
+      case "execute_code": {
+        const code = request.params?.code;
+        if (typeof code !== "string" || code.trim().length === 0) {
+          throw new Error("code is required for execute_code");
+        }
+
+        const logs: string[] = [];
+        const originalLog = console.log;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+        const originalInfo = console.info;
+
+        const formatArg = (arg: unknown): string => {
+          if (typeof arg === "string") return arg;
+          if (arg instanceof Error) return arg.stack || arg.message;
+          try {
+            return JSON.stringify(safeSerialize(arg), null, 2);
+          } catch {
+            return String(arg);
+          }
+        };
+
+        console.log = (...args: unknown[]) => {
+          logs.push(args.map(formatArg).join(" "));
+          originalLog.apply(console, args);
+        };
+        console.warn = (...args: unknown[]) => {
+          logs.push(`[WARN] ${args.map(formatArg).join(" ")}`);
+          originalWarn.apply(console, args);
+        };
+        console.error = (...args: unknown[]) => {
+          logs.push(`[ERROR] ${args.map(formatArg).join(" ")}`);
+          originalError.apply(console, args);
+        };
+        console.info = (...args: unknown[]) => {
+          logs.push(`[INFO] ${args.map(formatArg).join(" ")}`);
+          originalInfo.apply(console, args);
+        };
+
+        try {
+          let fn: Function;
+          try {
+            fn = new AsyncFunction("figma", wrapCode(code));
+          } catch {
+            try {
+              fn = new AsyncFunction("figma", `return await (async () => {\n${code}\n})();`);
+            } catch {
+              fn = new AsyncFunction("figma", code);
+            }
+          }
+
+          const rawResult = await fn(figma);
+          return {
+            type: request.type,
+            requestId: request.requestId,
+            data: {
+              success: true,
+              result: safeSerialize(rawResult),
+              logs,
+            },
+          };
+        } catch (execErr: unknown) {
+          return {
+            type: request.type,
+            requestId: request.requestId,
+            data: {
+              success: false,
+              error: execErr instanceof Error ? execErr.message : String(execErr),
+              stack: execErr instanceof Error ? execErr.stack : undefined,
+              logs,
+            },
+          };
+        } finally {
+          console.log = originalLog;
+          console.warn = originalWarn;
+          console.error = originalError;
+          console.info = originalInfo;
+        }
       }
       default:
         throw new Error(`Unknown request type: ${request.type}`);
