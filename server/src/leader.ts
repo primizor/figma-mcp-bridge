@@ -117,7 +117,8 @@ export class Leader {
             params.items as Parameters<typeof executeSaveScreenshots>[1],
             params.format as ExportFormat | undefined,
             params.scale as number | undefined,
-            params.clip as boolean | undefined
+            params.clip as boolean | undefined,
+            params.overwrite as boolean | undefined
           );
           this.sendJSON(res, 200, { data: result });
           return;

@@ -68,6 +68,7 @@ interface SaveScreenshotItemInput {
   format?: ExportFormat;
   scale?: number;
   clip?: boolean;
+  overwrite?: boolean;
 }
 
 interface SaveScreenshotItemResult {
@@ -142,6 +143,26 @@ export function registerTools(server: McpServer, node: Node, port: number): void
     toolInputSchemas.get_node.shape,
     async ({ nodeId, fileKey }): Promise<ToolResult> => {
       return renderResponse(() => node.send("get_node", [nodeId], fileKey));
+    }
+  );
+
+  server.tool(
+    "get_node_ancestry",
+    "Get the ancestry chain of a node up to the root page. Returns the path of parents, containing root frame/screen, component set with all sibling variants, and component/instance details. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.get_node_ancestry.shape,
+    async ({ nodeId, fileKey }): Promise<ToolResult> => {
+      return renderResponse(() => node.send("get_node_ancestry", [nodeId], fileKey));
+    }
+  );
+
+  server.tool(
+    "find_instances",
+    "Find all instance nodes (INSTANCE) in the document referencing a given COMPONENT, COMPONENT_SET, or INSTANCE without dumping the whole page tree. Returns their screens/frames, parents, and variant properties. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.find_instances.shape,
+    async ({ componentId, allPages, fileKey }): Promise<ToolResult> => {
+      return renderResponse(() =>
+        node.sendWithParams("find_instances", [componentId], { allPages }, fileKey)
+      );
     }
   );
 
@@ -414,12 +435,32 @@ export function registerTools(server: McpServer, node: Node, port: number): void
 
   server.tool(
     "duplicate_nodes",
-    "Duplicate one or more nodes in place. The duplicates remain under the same parent as the originals. When multiple files are connected, specify fileKey.",
+    "Duplicate one or more nodes in place. Set asInstance: true to create an INSTANCE when duplicating a COMPONENT or COMPONENT_SET. When multiple files are connected, specify fileKey.",
     toolInputSchemas.duplicate_nodes.shape,
-    async ({ nodeIds, fileKey }): Promise<ToolResult> => {
+    async ({ nodeIds, asInstance, fileKey }): Promise<ToolResult> => {
       return renderResponse(() =>
-        node.sendWithParams("duplicate_nodes", nodeIds, undefined, fileKey)
+        node.sendWithParams("duplicate_nodes", nodeIds, { asInstance }, fileKey)
       );
+    }
+  );
+
+  server.tool(
+    "create_instance",
+    "Create a new instance of a COMPONENT or COMPONENT_SET (❖ -> ◇). Optionally specify parent frame/group, coordinates, variant properties, and name. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_instance.shape,
+    async ({ componentId, fileKey, ...params }): Promise<ToolResult> => {
+      return renderResponse(() =>
+        node.sendWithParams("create_instance", [componentId], params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "reset_instance_overrides",
+    "Reset all overrides on an INSTANCE or an element inside an instance back to the master component. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.reset_instance_overrides.shape,
+    async ({ nodeId, fileKey }): Promise<ToolResult> => {
+      return renderResponse(() => node.send("reset_instance_overrides", [nodeId], fileKey));
     }
   );
 
@@ -579,14 +620,14 @@ export function registerTools(server: McpServer, node: Node, port: number): void
     "save_screenshots",
     "Export screenshots for multiple nodes and save them directly to the local filesystem. Returns metadata only (no base64). When multiple files are connected, specify fileKey.",
     toolInputSchemas.save_screenshots.shape,
-    async ({ items, format, scale, clip, fileKey }): Promise<ToolResult> => {
+    async ({ items, format, scale, clip, overwrite, fileKey }): Promise<ToolResult> => {
       try {
         // Create a sender bound to the specific fileKey
         const sender: ScreenshotSender = {
           sendWithParams: (requestType, nodeIds, params) =>
             node.sendWithParams(requestType, nodeIds, params, fileKey),
         };
-        const result = await executeSaveScreenshots(sender, items, format, scale, clip);
+        const result = await executeSaveScreenshots(sender, items, format, scale, clip, overwrite);
         return {
           content: [{ type: "text", text: JSON.stringify(result) }],
         };
@@ -612,6 +653,7 @@ export function registerTools(server: McpServer, node: Node, port: number): void
  * @param format - Default export format override.
  * @param scale - Default export scale override for raster formats.
  * @param clip - Default clipping override for saved screenshots.
+ * @param overwrite - Default overwrite behavior for saved screenshots.
  * @returns Aggregate result with per-item outcomes.
  */
 export async function executeSaveScreenshots(
@@ -619,7 +661,8 @@ export async function executeSaveScreenshots(
   items: SaveScreenshotItemInput[],
   format?: ExportFormat,
   scale?: number,
-  clip?: boolean
+  clip?: boolean,
+  overwrite?: boolean
 ): Promise<{
   total: number;
   succeeded: number;
@@ -637,7 +680,8 @@ export async function executeSaveScreenshots(
       process.cwd(),
       format,
       scale,
-      clip
+      clip,
+      item.overwrite ?? overwrite ?? true
     );
     results.push(result);
   }
@@ -711,20 +755,16 @@ function parseToolInput<T>(
 }
 
 /**
- * Resolves an output path relative to the workspace and ensures it stays inside it.
+ * Resolves an output path: absolute paths are used directly; relative paths resolve from workspaceRoot.
  * @param outputPath - Relative or absolute output path.
- * @param workspaceRoot - Root directory that must contain the resolved path.
- * @returns Absolute path inside the workspace root.
+ * @param workspaceRoot - Root directory used to resolve relative paths.
+ * @returns Absolute path to target file.
  */
 function resolveAndValidateOutputPath(outputPath: string, workspaceRoot: string): string {
-  const resolvedRoot = path.resolve(workspaceRoot);
-  const resolvedPath = path.resolve(resolvedRoot, outputPath);
-  const relativePath = path.relative(resolvedRoot, resolvedPath);
-  const escapesRoot = relativePath.startsWith("..") || path.isAbsolute(relativePath);
-  if (escapesRoot) {
-    throw new Error(`outputPath must be inside the MCP server working directory: ${resolvedRoot}`);
+  if (path.isAbsolute(outputPath)) {
+    return path.resolve(outputPath);
   }
-  return resolvedPath;
+  return path.resolve(workspaceRoot, outputPath);
 }
 
 /**
@@ -1066,7 +1106,8 @@ async function saveScreenshotItemToFile(
   workspaceRoot: string,
   defaultFormat?: ExportFormat,
   defaultScale?: number,
-  defaultClip?: boolean
+  defaultClip?: boolean,
+  defaultOverwrite = true
 ): Promise<SaveScreenshotItemResult> {
   let resolvedOutputPath = item.outputPath;
 
@@ -1076,6 +1117,7 @@ async function saveScreenshotItemToFile(
     const resolvedFormat = resolveExportFormat(item.format ?? defaultFormat, inferredFormat);
     const resolvedScale = resolveScale(item.scale, defaultScale);
     const resolvedClip = item.clip ?? defaultClip;
+    const resolvedOverwrite = item.overwrite ?? defaultOverwrite;
 
     const params: Record<string, unknown> = { format: resolvedFormat };
     if (resolvedScale !== undefined) {
@@ -1091,7 +1133,11 @@ async function saveScreenshotItemToFile(
     }
 
     const screenshotExport = getSingleScreenshotExport(resp.data);
-    const bytesWritten = await writeBase64ToFile(screenshotExport.base64, resolvedOutputPath);
+    const bytesWritten = await writeBase64ToFile(
+      screenshotExport.base64,
+      resolvedOutputPath,
+      resolvedOverwrite
+    );
 
     return {
       index,
@@ -1119,13 +1165,18 @@ async function saveScreenshotItemToFile(
  * Writes base64-encoded bytes to a file, creating parent directories as needed.
  * @param base64 - Base64-encoded file contents.
  * @param outputPath - Destination file path.
+ * @param overwrite - Whether to overwrite if the file already exists (default true).
  * @returns Number of bytes written.
  */
-async function writeBase64ToFile(base64: string, outputPath: string): Promise<number> {
+async function writeBase64ToFile(
+  base64: string,
+  outputPath: string,
+  overwrite = true
+): Promise<number> {
   const bytes = Buffer.from(base64, "base64");
   await mkdir(path.dirname(outputPath), { recursive: true });
   try {
-    await writeFile(outputPath, bytes, { flag: "wx" });
+    await writeFile(outputPath, bytes, { flag: overwrite ? "w" : "wx" });
   } catch (err) {
     if (isNodeError(err) && err.code === "EEXIST") {
       throw new Error(`File already exists at outputPath: ${outputPath}`);

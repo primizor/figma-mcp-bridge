@@ -29,7 +29,11 @@ type RequestType =
   | "ungroup_node"
   | "set_selection"
   | "scroll_and_zoom_into_view"
-  | "delete_nodes";
+  | "delete_nodes"
+  | "get_node_ancestry"
+  | "find_instances"
+  | "create_instance"
+  | "reset_instance_overrides";
 
 type ServerRequest = {
   type: RequestType;

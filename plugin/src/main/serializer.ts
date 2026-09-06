@@ -76,6 +76,11 @@ type SerializedStyles = {
   clipsContent?: boolean;
   rotation?: number;
   constraints?: { horizontal: string; vertical: string };
+  layoutAlign?: string;
+  layoutGrow?: number;
+  layoutSizingHorizontal?: string;
+  layoutSizingVertical?: string;
+  layoutPositioning?: string;
 };
 
 type SerializedBounds = {
@@ -89,11 +94,25 @@ type SerializedNode = {
   id: string;
   name: string;
   type: string;
+  parentId?: string;
   bounds?: SerializedBounds;
   characters?: string;
   styles?: SerializedStyles;
   children?: SerializedNode[];
   childCount?: number;
+  // Instance metadata
+  mainComponentId?: string;
+  mainComponentName?: string;
+  componentProperties?: Record<string, unknown>;
+  isExposedInstance?: boolean;
+  hasOverrides?: boolean;
+  overrides?: Array<{ id: string; overriddenFields: string[] }>;
+  // Component metadata
+  componentSetId?: string;
+  variantProperties?: Record<string, string> | null;
+  // Component set metadata
+  defaultVariantId?: string;
+  variantGroupProperties?: Record<string, { values: string[] }>;
 };
 
 const isMixed = (value: unknown): value is symbol => typeof value === "symbol";
@@ -342,29 +361,81 @@ const serializeStyles = (node: SceneNode): SerializedStyles => {
     const c = node.constraints as Constraints;
     styles.constraints = { horizontal: c.horizontal, vertical: c.vertical };
   }
+  if ("layoutAlign" in node && typeof (node as LayoutMixin).layoutAlign === "string") {
+    styles.layoutAlign = (node as LayoutMixin).layoutAlign;
+  }
+  if ("layoutGrow" in node && typeof (node as LayoutMixin).layoutGrow === "number") {
+    styles.layoutGrow = (node as LayoutMixin).layoutGrow;
+  }
+  if (
+    "layoutSizingHorizontal" in node &&
+    typeof (node as LayoutMixin).layoutSizingHorizontal === "string"
+  ) {
+    styles.layoutSizingHorizontal = (node as LayoutMixin).layoutSizingHorizontal;
+  }
+  if (
+    "layoutSizingVertical" in node &&
+    typeof (node as LayoutMixin).layoutSizingVertical === "string"
+  ) {
+    styles.layoutSizingVertical = (node as LayoutMixin).layoutSizingVertical;
+  }
+  if ("layoutPositioning" in node && typeof (node as LayoutMixin).layoutPositioning === "string") {
+    styles.layoutPositioning = (node as LayoutMixin).layoutPositioning;
+  }
 
   return styles;
 };
 
-export const serializeNode = (node: SceneNode): SerializedNode => {
+export const serializeNode = async (node: SceneNode): Promise<SerializedNode> => {
   const base: SerializedNode = {
     id: node.id,
     name: node.name,
     type: node.type,
+    parentId: node.parent?.id,
     bounds: getBounds(node),
     styles: serializeStyles(node),
   };
+
+  if (node.type === "INSTANCE") {
+    const instance = node as InstanceNode;
+    try {
+      const comp = await instance.getMainComponentAsync();
+      base.mainComponentId = comp?.id;
+      base.mainComponentName = comp?.name;
+    } catch {
+      // Cannot resolve mainComponent asynchronously
+    }
+    base.componentProperties = instance.componentProperties as Record<string, unknown>;
+    base.isExposedInstance = instance.isExposedInstance;
+    base.hasOverrides = (instance.overrides?.length ?? 0) > 0;
+    if (instance.overrides && instance.overrides.length > 0) {
+      base.overrides = instance.overrides.map((o) => ({
+        id: o.id,
+        overriddenFields: [...o.overriddenFields],
+      }));
+    }
+  } else if (node.type === "COMPONENT") {
+    const component = node as ComponentNode;
+    base.componentSetId =
+      component.parent?.type === "COMPONENT_SET" ? component.parent.id : undefined;
+    base.variantProperties = component.variantProperties;
+  } else if (node.type === "COMPONENT_SET") {
+    const componentSet = node as ComponentSetNode;
+    base.defaultVariantId = componentSet.defaultVariant?.id;
+    base.variantGroupProperties = componentSet.variantGroupProperties;
+  }
 
   if (node.type === "TEXT") {
     return serializeText(node, base);
   }
 
   if ("children" in node) {
+    const children = await Promise.all(
+      node.children.map((child) => serializeNode(child))
+    );
     return {
       ...base,
-      children: node.children
-        .filter((child) => child.visible !== false)
-        .map((child) => serializeNode(child)),
+      children,
     };
   }
 

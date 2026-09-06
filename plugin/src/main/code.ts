@@ -38,7 +38,11 @@ type RequestType =
   | "remove_animation_style"
   | "apply_manual_keyframe_track"
   | "remove_manual_keyframe_track"
-  | "set_timeline_duration";
+  | "set_timeline_duration"
+  | "get_node_ancestry"
+  | "find_instances"
+  | "create_instance"
+  | "reset_instance_overrides";
 
 type ServerRequestParams = Record<string, unknown> & {
   format?: "PNG" | "SVG" | "JPG" | "PDF";
@@ -354,6 +358,8 @@ const EDIT_REQUEST_TYPES = new Set<RequestType>([
   "apply_manual_keyframe_track",
   "remove_manual_keyframe_track",
   "set_timeline_duration",
+  "create_instance",
+  "reset_instance_overrides",
 ]);
 
 const requireEditorMode = (toolName: RequestType): void => {
@@ -376,13 +382,15 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
         return {
           type: request.type,
           requestId: request.requestId,
-          data: serializeNode(figma.currentPage),
+          data: await serializeNode(figma.currentPage as unknown as SceneNode),
         };
       case "get_selection":
         return {
           type: request.type,
           requestId: request.requestId,
-          data: figma.currentPage.selection.map((node) => serializeNode(node)),
+          data: await Promise.all(
+            figma.currentPage.selection.map((node) => serializeNode(node))
+          ),
         };
       case "get_node": {
         const nodeId = request.nodeIds && request.nodeIds[0];
@@ -396,7 +404,7 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
         return {
           type: request.type,
           requestId: request.requestId,
-          data: serializeNode(node as SceneNode),
+          data: await serializeNode(node as SceneNode),
         };
       }
       case "get_styles": {
@@ -458,8 +466,8 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
         const serializeWithDepth = async (
           node: unknown,
           currentDepth: number
-        ): Promise<ReturnType<typeof serializeNode>> => {
-          const serialized = serializeNode(node);
+        ): Promise<Awaited<ReturnType<typeof serializeNode>>> => {
+          const serialized = await serializeNode(node as SceneNode);
           if (currentDepth >= depth && serialized.children) {
             // Truncate children at depth limit, but show count
             return {
@@ -468,7 +476,7 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
               childCount:
                 (node as ChildrenMixin & SceneNode).children?.filter((c) => c.visible !== false)
                   .length ?? 0,
-            } as ReturnType<typeof serializeNode> & { childCount: number };
+            } as Awaited<ReturnType<typeof serializeNode>> & { childCount: number };
           }
           if (serialized.children) {
             const childNodes = await Promise.all(
@@ -841,6 +849,61 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
           }
           node.cornerRadius = params.cornerRadius;
           applied.cornerRadius = node.cornerRadius;
+        }
+
+        if (params.constraints && typeof params.constraints === "object") {
+          if (!("constraints" in node)) {
+            throw new Error(`Node does not support constraints: ${node.id}`);
+          }
+          const c = params.constraints as { horizontal?: string; vertical?: string };
+          const current = (node as ConstraintMixin).constraints;
+          const horizontal = (c.horizontal ?? current.horizontal) as ConstraintType;
+          const vertical = (c.vertical ?? current.vertical) as ConstraintType;
+          (node as ConstraintMixin).constraints = { horizontal, vertical };
+          applied.constraints = (node as ConstraintMixin).constraints;
+        }
+
+        if (typeof params.layoutAlign === "string") {
+          if (!("layoutAlign" in node)) {
+            throw new Error(`Node does not support layoutAlign: ${node.id}`);
+          }
+          (node as LayoutMixin).layoutAlign = params.layoutAlign as
+            "MIN" | "CENTER" | "MAX" | "STRETCH" | "INHERIT";
+          applied.layoutAlign = (node as LayoutMixin).layoutAlign;
+        }
+
+        if (typeof params.layoutGrow === "number") {
+          if (!("layoutGrow" in node)) {
+            throw new Error(`Node does not support layoutGrow: ${node.id}`);
+          }
+          (node as LayoutMixin).layoutGrow = params.layoutGrow;
+          applied.layoutGrow = (node as LayoutMixin).layoutGrow;
+        }
+
+        if (typeof params.layoutSizingHorizontal === "string") {
+          if (!("layoutSizingHorizontal" in node)) {
+            throw new Error(`Node does not support layoutSizingHorizontal: ${node.id}`);
+          }
+          (node as LayoutMixin).layoutSizingHorizontal = params.layoutSizingHorizontal as
+            "FIXED" | "HUG" | "FILL";
+          applied.layoutSizingHorizontal = (node as LayoutMixin).layoutSizingHorizontal;
+        }
+
+        if (typeof params.layoutSizingVertical === "string") {
+          if (!("layoutSizingVertical" in node)) {
+            throw new Error(`Node does not support layoutSizingVertical: ${node.id}`);
+          }
+          (node as LayoutMixin).layoutSizingVertical = params.layoutSizingVertical as
+            "FIXED" | "HUG" | "FILL";
+          applied.layoutSizingVertical = (node as LayoutMixin).layoutSizingVertical;
+        }
+
+        if (typeof params.layoutPositioning === "string") {
+          if (!("layoutPositioning" in node)) {
+            throw new Error(`Node does not support layoutPositioning: ${node.id}`);
+          }
+          (node as LayoutMixin).layoutPositioning = params.layoutPositioning as "AUTO" | "ABSOLUTE";
+          applied.layoutPositioning = (node as LayoutMixin).layoutPositioning;
         }
 
         return {
@@ -1505,18 +1568,36 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
           throw new Error("nodeIds is required for duplicate_nodes");
         }
 
+        const asInstance = request.params?.asInstance === true;
         const duplicates = [];
         for (const nodeId of request.nodeIds) {
           const node = await getSceneNodeById(nodeId);
-          if (!("clone" in node) || typeof node.clone !== "function") {
-            throw new Error(`Node does not support duplication: ${node.id}`);
+          let clone: SceneNode;
+          if (asInstance && (node.type === "COMPONENT" || node.type === "COMPONENT_SET")) {
+            if (node.type === "COMPONENT") {
+              clone = (node as ComponentNode).createInstance();
+            } else {
+              clone = (node as ComponentSetNode).defaultVariant.createInstance();
+            }
+            if (node.parent && supportsChildren(node.parent)) {
+              node.parent.appendChild(clone);
+            } else {
+              figma.currentPage.appendChild(clone);
+            }
+            clone.x = node.x + 20;
+            clone.y = node.y + 20;
+          } else {
+            if (!("clone" in node) || typeof node.clone !== "function") {
+              throw new Error(`Node does not support duplication: ${node.id}`);
+            }
+            clone = node.clone();
           }
-          const clone = node.clone();
           duplicates.push({
             sourceNodeId: node.id,
             nodeId: clone.id,
             nodeName: clone.name,
             parentId: clone.parent?.id,
+            isInstance: clone.type === "INSTANCE",
           });
         }
 
@@ -1832,6 +1913,433 @@ const handleRequest = async (request: ServerRequest): Promise<PluginResponse> =>
           data: {
             nodeId: node.id,
             timelines: node.timelines,
+          },
+        };
+      }
+      case "get_node_ancestry": {
+        const nodeId = request.nodeIds && request.nodeIds[0];
+        if (!nodeId) {
+          throw new Error("nodeIds is required for get_node_ancestry");
+        }
+        const targetNode = await figma.getNodeByIdAsync(nodeId);
+        if (!targetNode || targetNode.type === "DOCUMENT") {
+          throw new Error(`Node not found: ${nodeId}`);
+        }
+
+        const ancestors: Array<{ id: string; name: string; type: string }> = [];
+        let current: BaseNode | null = targetNode.parent;
+        let rootFrame:
+          | {
+              id: string;
+              name: string;
+              type: string;
+              bounds?: { x: number; y: number; width: number; height: number };
+            }
+          | undefined;
+        let componentSet:
+          | {
+              id: string;
+              name: string;
+              defaultVariant?: { id: string; name: string };
+              variantGroupProperties?: Record<string, { values: string[] }>;
+              variants: Array<{
+                id: string;
+                name: string;
+                variantProperties?: Record<string, string> | null;
+              }>;
+            }
+          | undefined;
+        let component:
+          | {
+              id: string;
+              name: string;
+              description?: string;
+              variantProperties?: Record<string, string> | null;
+            }
+          | undefined;
+        let instance:
+          | {
+              id: string;
+              name: string;
+              mainComponent?: {
+                id?: string;
+                name?: string;
+                componentSetId?: string;
+                componentSetName?: string;
+              };
+              componentProperties?: Record<string, unknown>;
+              hasOverrides: boolean;
+              overridesCount: number;
+            }
+          | undefined;
+
+        if (targetNode.type === "COMPONENT_SET") {
+          const cs = targetNode as ComponentSetNode;
+          componentSet = {
+            id: cs.id,
+            name: cs.name,
+            defaultVariant: cs.defaultVariant
+              ? { id: cs.defaultVariant.id, name: cs.defaultVariant.name }
+              : undefined,
+            variantGroupProperties: cs.variantGroupProperties,
+            variants: cs.children
+              .filter((c): c is ComponentNode => c.type === "COMPONENT")
+              .map((c) => ({
+                id: c.id,
+                name: c.name,
+                variantProperties: c.variantProperties,
+              })),
+          };
+        } else if (targetNode.type === "COMPONENT") {
+          const comp = targetNode as ComponentNode;
+          component = {
+            id: comp.id,
+            name: comp.name,
+            description: comp.description,
+            variantProperties: comp.variantProperties,
+          };
+        } else if (targetNode.type === "INSTANCE") {
+          const inst = targetNode as InstanceNode;
+          const mainComp = await inst.getMainComponentAsync();
+          instance = {
+            id: inst.id,
+            name: inst.name,
+            mainComponent: mainComp
+              ? {
+                  id: mainComp.id,
+                  name: mainComp.name,
+                  componentSetId:
+                    mainComp.parent?.type === "COMPONENT_SET"
+                      ? mainComp.parent.id
+                      : undefined,
+                  componentSetName:
+                    mainComp.parent?.type === "COMPONENT_SET"
+                      ? mainComp.parent.name
+                      : undefined,
+                }
+              : undefined,
+            componentProperties: inst.componentProperties as Record<string, unknown>,
+            hasOverrides: (inst.overrides?.length ?? 0) > 0,
+            overridesCount: inst.overrides?.length ?? 0,
+          };
+        }
+
+        while (current && current.type !== "DOCUMENT") {
+          ancestors.push({ id: current.id, name: current.name, type: current.type });
+
+          if (current.parent && current.parent.type === "PAGE") {
+            const rf = current as SceneNode;
+            rootFrame = {
+              id: rf.id,
+              name: rf.name,
+              type: rf.type,
+              bounds:
+                "width" in rf && "height" in rf
+                  ? { x: rf.x, y: rf.y, width: rf.width, height: rf.height }
+                  : undefined,
+            };
+          }
+
+          if (!componentSet && current.type === "COMPONENT_SET") {
+            const cs = current as ComponentSetNode;
+            componentSet = {
+              id: cs.id,
+              name: cs.name,
+              defaultVariant: cs.defaultVariant
+                ? { id: cs.defaultVariant.id, name: cs.defaultVariant.name }
+                : undefined,
+              variantGroupProperties: cs.variantGroupProperties,
+              variants: cs.children
+                .filter((c): c is ComponentNode => c.type === "COMPONENT")
+                .map((c) => ({
+                  id: c.id,
+                  name: c.name,
+                  variantProperties: c.variantProperties,
+                })),
+            };
+          }
+
+          if (!component && current.type === "COMPONENT") {
+            const comp = current as ComponentNode;
+            component = {
+              id: comp.id,
+              name: comp.name,
+              description: comp.description,
+              variantProperties: comp.variantProperties,
+            };
+          }
+
+          if (!instance && current.type === "INSTANCE") {
+            const inst = current as InstanceNode;
+            const mainComp = await inst.getMainComponentAsync();
+            instance = {
+              id: inst.id,
+              name: inst.name,
+              mainComponent: mainComp
+                ? {
+                    id: mainComp.id,
+                    name: mainComp.name,
+                    componentSetId:
+                      mainComp.parent?.type === "COMPONENT_SET"
+                        ? mainComp.parent.id
+                        : undefined,
+                    componentSetName:
+                      mainComp.parent?.type === "COMPONENT_SET"
+                        ? mainComp.parent.name
+                        : undefined,
+                  }
+                : undefined,
+              componentProperties: inst.componentProperties as Record<string, unknown>,
+              hasOverrides: (inst.overrides?.length ?? 0) > 0,
+              overridesCount: inst.overrides?.length ?? 0,
+            };
+          }
+
+          current = current.parent;
+        }
+
+        let pageNode: BaseNode | null = targetNode;
+        while (pageNode && pageNode.type !== "PAGE") {
+          pageNode = pageNode.parent;
+        }
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            nodeId: targetNode.id,
+            nodeName: targetNode.name,
+            nodeType: targetNode.type,
+            page: pageNode ? { id: pageNode.id, name: pageNode.name } : undefined,
+            rootFrame,
+            componentSet,
+            component,
+            instance,
+            ancestors,
+          },
+        };
+      }
+      case "find_instances": {
+        const componentId = request.nodeIds && request.nodeIds[0];
+        if (!componentId) {
+          throw new Error("nodeIds is required for find_instances");
+        }
+        const targetNode = await figma.getNodeByIdAsync(componentId);
+        if (!targetNode || targetNode.type === "DOCUMENT") {
+          throw new Error(`Node not found: ${componentId}`);
+        }
+
+        const targetComponentIds = new Set<string>();
+        let componentSetId: string | undefined;
+
+        if (targetNode.type === "COMPONENT") {
+          targetComponentIds.add(targetNode.id);
+          if (targetNode.parent?.type === "COMPONENT_SET") {
+            componentSetId = targetNode.parent.id;
+          }
+        } else if (targetNode.type === "COMPONENT_SET") {
+          componentSetId = targetNode.id;
+          const cs = targetNode as ComponentSetNode;
+          for (const child of cs.children) {
+            if (child.type === "COMPONENT") {
+              targetComponentIds.add(child.id);
+            }
+          }
+        } else if (targetNode.type === "INSTANCE") {
+          const inst = targetNode as InstanceNode;
+          const mainComp = await inst.getMainComponentAsync();
+          if (mainComp) {
+            targetComponentIds.add(mainComp.id);
+            if (mainComp.parent?.type === "COMPONENT_SET") {
+              componentSetId = mainComp.parent.id;
+            }
+          }
+        } else {
+          throw new Error(
+            `Target node is not a COMPONENT, COMPONENT_SET, or INSTANCE: ${componentId}`
+          );
+        }
+
+        const allPages = request.params?.allPages === true;
+        const pagesToSearch: PageNode[] = allPages ? [...figma.root.children] : [figma.currentPage];
+
+        const matchedInstances: Array<{
+          id: string;
+          name: string;
+          page: { id: string; name: string };
+          rootFrame?: { id: string; name: string; type: string };
+          parent?: { id: string; name: string; type: string };
+          mainComponent?: { id: string; name: string };
+          variantProperties?: Record<string, string> | null;
+          visible: boolean;
+          hasOverrides: boolean;
+          bounds: { x: number; y: number; width: number; height: number };
+        }> = [];
+
+        for (const page of pagesToSearch) {
+          if (page.id !== figma.currentPage.id) {
+            await page.loadAsync();
+          }
+
+          const instances = page.findAllWithCriteria({ types: ["INSTANCE"] });
+          for (const inst of instances) {
+            const mainComp = await inst.getMainComponentAsync();
+            const matchesComponent =
+              mainComp !== null && targetComponentIds.has(mainComp.id);
+            const matchesSet =
+              componentSetId !== undefined &&
+              mainComp?.parent?.type === "COMPONENT_SET" &&
+              mainComp.parent.id === componentSetId;
+
+            if (matchesComponent || matchesSet) {
+              let cur: BaseNode | null = inst.parent;
+              let rootFrame: { id: string; name: string; type: string } | undefined;
+              while (cur && cur.type !== "DOCUMENT") {
+                if (cur.parent && cur.parent.type === "PAGE") {
+                  rootFrame = { id: cur.id, name: cur.name, type: cur.type };
+                  break;
+                }
+                cur = cur.parent;
+              }
+
+              matchedInstances.push({
+                id: inst.id,
+                name: inst.name,
+                page: { id: page.id, name: page.name },
+                rootFrame,
+                parent: inst.parent
+                  ? { id: inst.parent.id, name: inst.parent.name, type: inst.parent.type }
+                  : undefined,
+                mainComponent: mainComp
+                  ? { id: mainComp.id, name: mainComp.name }
+                  : undefined,
+                variantProperties: inst.variantProperties,
+                visible: inst.visible,
+                hasOverrides: (inst.overrides?.length ?? 0) > 0,
+                bounds: { x: inst.x, y: inst.y, width: inst.width, height: inst.height },
+              });
+            }
+          }
+        }
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            target: { id: targetNode.id, name: targetNode.name, type: targetNode.type },
+            totalInstances: matchedInstances.length,
+            instances: matchedInstances,
+          },
+        };
+      }
+      case "create_instance": {
+        const componentId = request.nodeIds && request.nodeIds[0];
+        if (!componentId) {
+          throw new Error("nodeIds is required for create_instance");
+        }
+        const targetNode = await figma.getNodeByIdAsync(componentId);
+        if (!targetNode || targetNode.type === "DOCUMENT") {
+          throw new Error(`Node not found: ${componentId}`);
+        }
+
+        let component: ComponentNode;
+        const variantProperties = request.params?.variantProperties as
+          Record<string, string> | undefined;
+
+        if (targetNode.type === "COMPONENT") {
+          component = targetNode as ComponentNode;
+        } else if (targetNode.type === "COMPONENT_SET") {
+          const setNode = targetNode as ComponentSetNode;
+          if (variantProperties && Object.keys(variantProperties).length > 0) {
+            const match = setNode.children.find((c) => {
+              if (c.type !== "COMPONENT") return false;
+              const vp = (c as ComponentNode).variantProperties;
+              if (!vp) return false;
+              return Object.entries(variantProperties).every(([k, v]) => vp[k] === v);
+            });
+            component = (match as ComponentNode) || setNode.defaultVariant;
+          } else {
+            component = setNode.defaultVariant;
+          }
+        } else {
+          throw new Error(`Target node is not a COMPONENT or COMPONENT_SET: ${componentId}`);
+        }
+
+        const instance = component.createInstance();
+        const parentId = request.params?.parentId;
+        if (typeof parentId === "string") {
+          const parent = await getParentNodeById(parentId);
+          parent.appendChild(instance);
+        } else {
+          figma.currentPage.appendChild(instance);
+        }
+
+        if (typeof request.params?.x === "number") {
+          instance.x = request.params.x;
+        }
+        if (typeof request.params?.y === "number") {
+          instance.y = request.params.y;
+        }
+        if (typeof request.params?.name === "string") {
+          instance.name = request.params.name;
+        }
+
+        const mainComp = await instance.getMainComponentAsync();
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            nodeId: instance.id,
+            nodeName: instance.name,
+            parentId: instance.parent?.id,
+            mainComponentId: mainComp?.id,
+            mainComponentName: mainComp?.name,
+            variantProperties: instance.variantProperties,
+            bounds: {
+              x: instance.x,
+              y: instance.y,
+              width: instance.width,
+              height: instance.height,
+            },
+          },
+        };
+      }
+      case "reset_instance_overrides": {
+        const nodeId = request.nodeIds && request.nodeIds[0];
+        if (!nodeId) {
+          throw new Error("nodeIds is required for reset_instance_overrides");
+        }
+        const node = await getSceneNodeById(nodeId);
+        let instance: InstanceNode | null = null;
+        if (node.type === "INSTANCE") {
+          instance = node as InstanceNode;
+        } else {
+          let cur: BaseNode | null = node;
+          while (cur && cur.type !== "DOCUMENT" && cur.type !== "PAGE") {
+            if (cur.type === "INSTANCE") {
+              instance = cur as InstanceNode;
+              break;
+            }
+            cur = cur.parent;
+          }
+        }
+
+        if (!instance) {
+          throw new Error(`Node is neither an INSTANCE nor inside an INSTANCE: ${nodeId}`);
+        }
+
+        instance.resetOverrides();
+        const mainComp = await instance.getMainComponentAsync();
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            nodeId: instance.id,
+            nodeName: instance.name,
+            mainComponentId: mainComp?.id,
+            reset: true,
           },
         };
       }

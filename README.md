@@ -62,47 +62,51 @@ If you want to know more about how it works, read the [How it works](#how-it-wor
 
 ## Available Tools
 
-| Tool                           | Description                                                                            |
-| ------------------------------ | -------------------------------------------------------------------------------------- |
-| `list_files`                   | List all connected Figma files (supports multi-file workflows)                         |
-| `get_document`                 | Get the current Figma page document tree                                               |
-| `get_selection`                | Get the currently selected nodes in Figma                                              |
-| `get_node`                     | Get a specific Figma node by ID (colon format, e.g. `4029:12345`)                      |
-| `get_styles`                   | Get all local paint, text, effect, and grid styles                                     |
-| `get_metadata`                 | Get file name, pages, and current page info                                            |
-| `get_design_context`           | Get a depth-limited tree optimized for understanding design context                    |
-| `get_variable_defs`            | Get all variable collections, modes, and values (design tokens)                        |
-| `get_screenshot`               | Export nodes as PNG/SVG/JPG/PDF (base64-encoded)                                       |
-| `save_screenshots`             | Export and save screenshots directly to the local filesystem                           |
-| `get_motion_styles`            | List all available animation presets (beta)                                            |
-| `get_node_motion`              | Read a node's current animation styles and properties (beta)                           |
-| `apply_animation_style`        | Apply a preset animation style to a node (beta)                                        |
-| `remove_animation_style`       | Remove an applied animation style from a node (beta)                                   |
-| `apply_manual_keyframe_track`  | Apply a manual keyframe track to a node property (beta)                                |
-| `remove_manual_keyframe_track` | Remove a manual keyframe track from a node property (beta)                             |
-| `set_timeline_duration`        | Set the duration of a timeline in seconds (beta)                                       |
-| `set_node_visibility`          | Show or hide specific nodes                                                            |
-| `set_text_content`             | Replace the contents of a text node                                                    |
-| `set_text_properties`          | Patch font, size, alignment, auto-resize, color, and bounds on a text node             |
-| `set_node_properties`          | Patch common node properties: name, position, size, visibility, opacity, corner radius |
-| `set_solid_fill`               | Replace a node's fill or stroke with a single solid paint                              |
-| `set_gradient_fill`            | Replace a node's fill or stroke with a linear/radial/angular/diamond gradient          |
-| `set_effects`                  | Replace a node's effects list (drop/inner shadows, layer/background blurs)             |
-| `set_stroke_properties`        | Patch stroke weight, align, dash pattern, cap, and join                                |
-| `set_auto_layout`              | Configure auto-layout direction, padding, gap, alignment, sizing, and wrap             |
-| `create_page`                  | Create a new page in the document, optionally switching to it                          |
-| `create_frame`                 | Create a new frame, optionally under a parent                                          |
-| `create_text`                  | Create a new text node                                                                 |
-| `create_shape`                 | Create a rectangle, ellipse, or line                                                   |
-| `create_image`                 | Create an image-backed rectangle from a local path, URL, or data URI                   |
-| `import_html_layers`           | Bulk-import an html-figma layer tree (JSON) as frames, text, rectangles, and vectors   |
-| `duplicate_nodes`              | Duplicate nodes in place                                                               |
-| `reparent_nodes`               | Move nodes into another parent                                                         |
-| `group_nodes`                  | Wrap a list of nodes (sharing a parent) in a new group                                 |
-| `ungroup_node`                 | Ungroup a group or frame — children move up to its parent                              |
-| `set_selection`                | Set the page selection to a list of node IDs (works in Dev Mode)                       |
-| `scroll_and_zoom_into_view`    | Frame the viewport around the given nodes (works in Dev Mode)                          |
-| `delete_nodes`                 | Delete nodes with explicit confirmation                                                |
+| Tool                           | Description                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
+| `list_files`                   | List all connected Figma files (supports multi-file workflows)                           |
+| `get_document`                 | Get the current Figma page document tree                                                 |
+| `get_selection`                | Get the currently selected nodes in Figma                                                |
+| `get_node`                     | Get a specific Figma node by ID (colon format, e.g. `4029:12345`)                        |
+| `get_node_ancestry`            | Get the ancestry chain of a node up to root page, containing screen/artboard & variants  |
+| `find_instances`               | Find all instances of a component or component set across screens without tree dumps     |
+| `get_styles`                   | Get all local paint, text, effect, and grid styles                                       |
+| `get_metadata`                 | Get file name, pages, and current page info                                              |
+| `get_design_context`           | Get a depth-limited tree optimized for understanding design context                      |
+| `get_variable_defs`            | Get all variable collections, modes, and values (design tokens)                          |
+| `get_screenshot`               | Export nodes as PNG/SVG/JPG/PDF (base64-encoded)                                         |
+| `save_screenshots`             | Export and save screenshots directly to filesystem (supports absolute paths & overwrite) |
+| `get_motion_styles`            | List all available animation presets (beta)                                              |
+| `get_node_motion`              | Read a node's current animation styles and properties (beta)                             |
+| `apply_animation_style`        | Apply a preset animation style to a node (beta)                                          |
+| `remove_animation_style`       | Remove an applied animation style from a node (beta)                                     |
+| `apply_manual_keyframe_track`  | Apply a manual keyframe track to a node property (beta)                                  |
+| `remove_manual_keyframe_track` | Remove a manual keyframe track from a node property (beta)                               |
+| `set_timeline_duration`        | Set the duration of a timeline in seconds (beta)                                         |
+| `set_node_visibility`          | Show or hide specific nodes                                                              |
+| `set_text_content`             | Replace the contents of a text node                                                      |
+| `set_text_properties`          | Patch font, size, alignment, auto-resize, color, and bounds on a text node               |
+| `set_node_properties`          | Patch name, bounds, visibility, opacity, corner radius, constraints, and layout sizing   |
+| `set_solid_fill`               | Replace a node's fill or stroke with a single solid paint                                |
+| `set_gradient_fill`            | Replace a node's fill or stroke with a linear/radial/angular/diamond gradient            |
+| `set_effects`                  | Replace a node's effects list (drop/inner shadows, layer/background blurs)               |
+| `set_stroke_properties`        | Patch stroke weight, align, dash pattern, cap, and join                                  |
+| `set_auto_layout`              | Configure auto-layout direction, padding, gap, alignment, sizing, and wrap               |
+| `create_page`                  | Create a new page in the document, optionally switching to it                            |
+| `create_frame`                 | Create a new frame, optionally under a parent                                            |
+| `create_text`                  | Create a new text node                                                                   |
+| `create_shape`                 | Create a rectangle, ellipse, or line                                                     |
+| `create_image`                 | Create an image-backed rectangle from a local path, URL, or data URI                     |
+| `create_instance`              | Create an instance (❖ -> ◇) of a component or component set under a parent frame         |
+| `reset_instance_overrides`     | Reset all overrides on an instance or child node back to master component                |
+| `import_html_layers`           | Bulk-import an html-figma layer tree (JSON) as frames, text, rectangles, and vectors     |
+| `duplicate_nodes`              | Duplicate nodes in place (supports `asInstance: true` for components)                    |
+| `reparent_nodes`               | Move nodes into another parent                                                           |
+| `group_nodes`                  | Wrap a list of nodes (sharing a parent) in a new group                                   |
+| `ungroup_node`                 | Ungroup a group or frame — children move up to its parent                                |
+| `set_selection`                | Set the page selection to a list of node IDs (works in Dev Mode)                         |
+| `scroll_and_zoom_into_view`    | Frame the viewport around the given nodes (works in Dev Mode)                            |
+| `delete_nodes`                 | Delete nodes with explicit confirmation                                                  |
 
 All tools accept an optional `fileKey` parameter when multiple Figma files are connected. Use `list_files` to discover connected files and their keys.
 

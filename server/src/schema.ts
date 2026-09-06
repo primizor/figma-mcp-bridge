@@ -95,6 +95,40 @@ export const setNodePropertiesInput = z.object({
   opacity: z.number().min(0).max(1).optional().describe("Optional opacity from 0 to 1"),
   visible: z.boolean().optional().describe("Optional visibility"),
   cornerRadius: z.number().min(0).optional().describe("Optional corner radius"),
+  constraints: z
+    .object({
+      horizontal: z
+        .enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"])
+        .optional()
+        .describe("Horizontal constraint"),
+      vertical: z
+        .enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"])
+        .optional()
+        .describe("Vertical constraint"),
+    })
+    .optional()
+    .describe("Optional constraint settings for resizing behavior (e.g. SCALE/SCALE for icons)"),
+  layoutAlign: z
+    .enum(["MIN", "CENTER", "MAX", "STRETCH", "INHERIT"])
+    .optional()
+    .describe("Optional alignment along counter axis in auto-layout"),
+  layoutGrow: z
+    .number()
+    .min(0)
+    .optional()
+    .describe("Optional flex grow factor (0 or 1) in auto-layout"),
+  layoutSizingHorizontal: z
+    .enum(["FIXED", "HUG", "FILL"])
+    .optional()
+    .describe("Optional horizontal sizing mode in auto-layout"),
+  layoutSizingVertical: z
+    .enum(["FIXED", "HUG", "FILL"])
+    .optional()
+    .describe("Optional vertical sizing mode in auto-layout"),
+  layoutPositioning: z
+    .enum(["AUTO", "ABSOLUTE"])
+    .optional()
+    .describe("Optional positioning mode inside auto-layout"),
   fileKey: fileKeyField,
 });
 
@@ -590,6 +624,48 @@ export const importHtmlLayersInput = z.object({
   fileKey: fileKeyField,
 });
 
+export const getNodeAncestryInput = z.object({
+  nodeId: createFigmaNodeIdSchema().describe(
+    "The node ID to inspect ancestry for. Accepts top-level IDs like '4029:12345' and instance-child IDs like 'I12740:17806;12740:17793'."
+  ),
+  fileKey: fileKeyField,
+});
+
+export const findInstancesInput = z.object({
+  componentId: createFigmaNodeIdSchema().describe(
+    "The ID of the COMPONENT, COMPONENT_SET, or INSTANCE to find references/instances for"
+  ),
+  allPages: z
+    .boolean()
+    .optional()
+    .describe("Whether to search all pages in the document (default false, searches current page)"),
+  fileKey: fileKeyField,
+});
+
+export const createInstanceInput = z.object({
+  componentId: createFigmaNodeIdSchema().describe(
+    "The ID of the COMPONENT or COMPONENT_SET to instantiate"
+  ),
+  parentId: createFigmaNodeIdSchema()
+    .optional()
+    .describe("Optional parent frame/group node ID (defaults to current page)"),
+  x: z.number().optional().describe("Optional X coordinate"),
+  y: z.number().optional().describe("Optional Y coordinate"),
+  variantProperties: z
+    .record(z.string())
+    .optional()
+    .describe("Optional variant properties map when instantiating from a COMPONENT_SET"),
+  name: z.string().optional().describe("Optional instance name override"),
+  fileKey: fileKeyField,
+});
+
+export const resetInstanceOverridesInput = z.object({
+  nodeId: createFigmaNodeIdSchema().describe(
+    "The ID of the INSTANCE or a node inside an instance to reset overrides for"
+  ),
+  fileKey: fileKeyField,
+});
+
 export const toolInputSchemas = {
   get_document: z.object({
     fileKey: fileKeyField,
@@ -706,7 +782,13 @@ export const toolInputSchemas = {
       value.rotation !== undefined ||
       value.opacity !== undefined ||
       value.visible !== undefined ||
-      value.cornerRadius !== undefined,
+      value.cornerRadius !== undefined ||
+      value.constraints !== undefined ||
+      value.layoutAlign !== undefined ||
+      value.layoutGrow !== undefined ||
+      value.layoutSizingHorizontal !== undefined ||
+      value.layoutSizingVertical !== undefined ||
+      value.layoutPositioning !== undefined,
     "At least one property must be provided"
   ),
 
@@ -727,6 +809,12 @@ export const toolInputSchemas = {
 
   duplicate_nodes: z.object({
     nodeIds: z.array(createFigmaNodeIdSchema()).min(1).describe("List of node IDs to duplicate"),
+    asInstance: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true and target is a COMPONENT or COMPONENT_SET, creates an INSTANCE instead of cloning the master component"
+      ),
     fileKey: fileKeyField,
   }),
 
@@ -761,7 +849,7 @@ export const toolInputSchemas = {
             .string()
             .min(1)
             .describe(
-              "Output file path (relative paths resolve from the MCP server current working directory)"
+              "Output file path (relative paths resolve from the MCP server current working directory; absolute paths are also supported)"
             ),
           format: createExportFormatSchema()
             .optional()
@@ -776,6 +864,10 @@ export const toolInputSchemas = {
             .describe(
               "Per-item clipping override. When true, PNGs are clipped to the node's logical bounds using Figma's absolute node bounds."
             ),
+          overwrite: z
+            .boolean()
+            .optional()
+            .describe("Whether to overwrite existing files at outputPath (default true)"),
         })
       )
       .min(1)
@@ -790,6 +882,10 @@ export const toolInputSchemas = {
       .describe(
         "Default clipping behavior for saved screenshots. When true, PNGs are clipped to the node's logical bounds using Figma's absolute node bounds."
       ),
+    overwrite: z
+      .boolean()
+      .optional()
+      .describe("Default overwrite behavior for saved screenshots (default true)"),
     fileKey: fileKeyField,
   }),
 
@@ -859,6 +955,11 @@ export const toolInputSchemas = {
       .describe("The new timeline duration in seconds (must be greater than zero)"),
     fileKey: fileKeyField,
   }),
+
+  get_node_ancestry: getNodeAncestryInput,
+  find_instances: findInstancesInput,
+  create_instance: createInstanceInput,
+  reset_instance_overrides: resetInstanceOverridesInput,
 } as const;
 
 type ToolName = keyof typeof toolInputSchemas;
@@ -958,6 +1059,22 @@ const rpcToArgs: Record<
   apply_manual_keyframe_track: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
   remove_manual_keyframe_track: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
   set_timeline_duration: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
+  get_node_ancestry: (nodeIds, params) => ({
+    ...params,
+    nodeId: nodeIds?.[0] ?? (params?.nodeId as string | undefined),
+  }),
+  find_instances: (nodeIds, params) => ({
+    ...params,
+    componentId: nodeIds?.[0] ?? (params?.componentId as string | undefined),
+  }),
+  create_instance: (nodeIds, params) => ({
+    ...params,
+    componentId: nodeIds?.[0] ?? (params?.componentId as string | undefined),
+  }),
+  reset_instance_overrides: (nodeIds, params) => ({
+    ...params,
+    nodeId: nodeIds?.[0] ?? (params?.nodeId as string | undefined),
+  }),
 };
 
 /**
@@ -999,10 +1116,15 @@ export function validateRpc(
     return { error: result.error.issues[0].message };
   }
 
-  // `rpcToArgs` folds the transport-level `nodeIds` into a `nodeId` field so the
+  // `rpcToArgs` folds transport-level `nodeIds` into `nodeId`/`componentId` so the
   // tool schema can validate it. The plugin reads node ids off `request.nodeIds`
   // instead, so drop it again — along with `fileKey`, which travels beside the
   // params rather than inside them.
-  const { nodeId: _nodeId, fileKey: _fileKey, ...rest } = result.data as Record<string, unknown>;
+  const {
+    nodeId: _nodeId,
+    componentId: _componentId,
+    fileKey: _fileKey,
+    ...rest
+  } = result.data as Record<string, unknown>;
   return { error: null, params: rest };
 }
